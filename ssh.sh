@@ -1,50 +1,84 @@
 #!/usr/bin/env bash
 
-# 定义颜色
+# === 配置颜色 ===
 RED="\033[31m"
 GREEN="\033[32m"
 YELLOW="\033[33m"
 RESET="\033[0m"
 
-# 检查 root 权限
-[[ $EUID -ne 0 ]] && echo -e "${RED}错误: 请使用 sudo -i 获取 root 权限后再执行此脚本${RESET}" && exit 1
+# === 权限检查 ===
+[[ $EUID -ne 0 ]] && echo -e "${RED}错误: 请使用 root 权限运行本脚本${RESET}" && exit 1
 
-# 提示用户输入 Cloudflared token 和 root 密码
-read -p "请输入 Cloudflared Tunnel Token: " TOKEN
-
+# === 获取 root 密码 ===
 while true; do
-  read -p "请输入 root 密码（至少10位）: " PASSWORD
-  if [[ -z "$PASSWORD" || ${#PASSWORD} -lt 10 ]]; then
-    echo -e "${RED}错误: 密码不能为空且长度不得少于10位${RESET}"
+  read -p "请输入 root 密码 (至少10位): " PASSWORD
+  if [[ -z "$PASSWORD" ]]; then
+    echo -e "${RED}错误: 密码不能为空${RESET}"
+  elif [[ ${#PASSWORD} -lt 10 ]]; then
+    echo -e "${RED}错误: 密码长度不足10位${RESET}"
   else
     break
   fi
 done
 
-echo -e "${YELLOW}[1/4] 配置 SSH 服务，启用密码登录和 root 登录...${RESET}"
+# === 获取 Cloudflared token ===
+while true; do
+  read -p "请输入 Cloudflared Token: " TOKEN
+  if [[ -z "$TOKEN" ]]; then
+    echo -e "${RED}错误: Token 不能为空${RESET}"
+  else
+    break
+  fi
+done
 
-# 配置 SSH 服务
+# === 配置 SSH 服务 ===
+echo -e "${YELLOW}[1/3] 配置 SSH 服务...${RESET}"
+
+# 修改 SSH 配置
 sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin yes/' /etc/ssh/sshd_config
 sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-echo "root:$PASSWORD" | chpasswd
+echo root:$PASSWORD | chpasswd
 
-# 解锁并启动 SSH 服务
-echo -e "${YELLOW}[2/4] 解锁 SSH 服务并尝试启动...${RESET}"
-systemctl unmask ssh 2>/dev/null || true
-systemctl start ssh 2>/dev/null || true
-systemctl enable ssh 2>/dev/null || true
+# 停用 socket 激活方式
+systemctl disable ssh.socket >/dev/null 2>&1 || true
+systemctl stop ssh.socket >/dev/null 2>&1 || true
+systemctl unmask ssh >/dev/null 2>&1 || true
 
-# 下载 Cloudflared
-echo -e "${YELLOW}[3/4] 下载并启动 Cloudflared 隧道...${RESET}"
-wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /usr/local/bin/cloudflared
-chmod +x /usr/local/bin/cloudflared
+# 杀掉可能占用 22 端口的进程
+fuser -k 22/tcp >/dev/null 2>&1 || true
 
-# 启动 Cloudflared 隧道
-nohup cloudflared tunnel --no-autoupdate run --token "$TOKEN" >/tmp/cloudflared.log 2>&1 &
+# 启动 SSH 服务
+systemctl enable ssh >/dev/null 2>&1
+systemctl restart ssh
 
-echo -e "${GREEN}[4/4] 所有配置完成，请在 Cloudflare 控制台查看 SSH 地址（.trycloudflare.com 子域名）${RESET}"
+# 检查是否启动成功
+if ! systemctl is-active --quiet ssh; then
+  echo -e "${RED}错误: SSH 服务启动失败，请检查端口占用或配置文件${RESET}"
+  exit 1
+fi
+
+# === 启动 Cloudflared 隧道 ===
+echo -e "${YELLOW}[2/3] 启动 Cloudflared 隧道...${RESET}"
+
+# 安装 Cloudflared（如未安装）
+if ! command -v cloudflared >/dev/null 2>&1; then
+  echo -e "${YELLOW}安装 Cloudflared...${RESET}"
+  wget -qO cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+  dpkg -i cloudflared.deb >/dev/null
+  rm -f cloudflared.deb
+fi
+
+# 结束已有 cloudflared 隧道
+pkill -f "cloudflared tunnel" >/dev/null 2>&1 || true
+
+# 启动新的隧道
+nohup cloudflared tunnel --no-autoupdate run --token "$TOKEN" >/dev/null 2>&1 &
+
+echo -e "${GREEN}[3/3] 所有配置完成！${RESET}"
 echo ""
-echo -e "${GREEN}SSH 用户: root${RESET}"
-echo -e "${GREEN}SSH 密码: $PASSWORD${RESET}"
+echo -e "${GREEN}SSH 登录信息：${RESET}"
+echo -e "用户：root"
+echo -e "密码：$PASSWORD"
+echo -e "隧道地址：请在 Cloudflare Zero Trust 控制台中查看分配的访问域名"
 echo ""
-echo -e "${YELLOW}注意: 如需停止 Cloudflared，可运行: pkill -f cloudflared${RESET}"
+echo -e "${YELLOW}提示：如果未连接，请检查 Cloudflare 后台确认 tunnel 是否在线。${RESET}"
