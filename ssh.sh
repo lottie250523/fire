@@ -37,6 +37,7 @@ echo -e "${YELLOW}[1/3] 配置 SSH 服务...${RESET}"
 # 修改 SSH 配置
 sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin yes/' /etc/ssh/sshd_config
 sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
+sed -i 's/^#\?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
 
 # 写入 SSH 公钥
 mkdir -p /root/.ssh
